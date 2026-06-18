@@ -414,9 +414,32 @@ def main() -> None:
     c3.metric("중앙 밴드 대비", f"{gap:+.1f}%" if gap is not None else "-", f"{mid:g}x 기준")
     c4.metric("미래 입력치", f"{len(forecast)}개")
 
+    date_sources = []
+    if not prices.empty and "date" in prices.columns:
+        date_sources.append(prices["date"])
+    if not forecast.empty and "date" in forecast.columns:
+        date_sources.append(forecast["date"])
+    if date_sources:
+        available_dates = pd.concat(date_sources).dropna()
+        min_chart_date = available_dates.min().date()
+        max_chart_date = available_dates.max().date()
+    else:
+        min_chart_date = date(1990, 1, 1)
+        max_chart_date = date.today()
+
     range_cols = st.columns([1, 1, 4])
-    start_date = range_cols[0].date_input("시작일", value=None)
-    end_date = range_cols[1].date_input("종료일", value=None)
+    start_date = range_cols[0].date_input(
+        "시작일",
+        value=None,
+        min_value=min_chart_date,
+        max_value=max_chart_date,
+    )
+    end_date = range_cols[1].date_input(
+        "종료일",
+        value=None,
+        min_value=min_chart_date,
+        max_value=max_chart_date,
+    )
 
     fig, future_all = build_chart(prices, actuals, forecast, mode, bands, start_date, end_date)
     st.plotly_chart(fig, use_container_width=True)
