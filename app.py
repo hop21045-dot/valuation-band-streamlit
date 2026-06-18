@@ -158,6 +158,37 @@ def band_value(row: pd.Series, multiple: float, mode: str) -> float:
     return float(row["eps"] if mode == "PER" else row["bps"]) * multiple
 
 
+def metric_column(mode: str) -> str:
+    return "eps" if mode == "PER" else "bps"
+
+
+def interpolated_metric(actuals: pd.DataFrame, dates: pd.Series, mode: str) -> pd.DataFrame:
+    column = metric_column(mode)
+    empty = pd.DataFrame(columns=["date", "metric"])
+    if actuals.empty or dates.empty or column not in actuals.columns:
+        return empty
+
+    metric_points = (
+        actuals[["date", column]]
+        .dropna()
+        .drop_duplicates(subset=["date"], keep="last")
+        .sort_values("date")
+        .rename(columns={column: "metric"})
+    )
+    if metric_points.empty:
+        return empty
+
+    target_dates = pd.to_datetime(pd.Series(dates).dropna().drop_duplicates()).sort_values()
+    if target_dates.empty:
+        return empty
+
+    series = metric_points.set_index("date")["metric"].astype(float)
+    combined_index = series.index.union(pd.DatetimeIndex(target_dates))
+    interpolated = series.reindex(combined_index).sort_index().interpolate(method="time").ffill().bfill()
+    values = interpolated.reindex(pd.DatetimeIndex(target_dates))
+    return pd.DataFrame({"date": target_dates.to_list(), "metric": values.to_list()}).dropna()
+
+
 def build_chart(
     prices: pd.DataFrame,
     actuals: pd.DataFrame,
@@ -200,32 +231,31 @@ def build_chart(
             )
         )
 
-    price_dates = prices["date"].tolist() if "date" in prices.columns else []
-    future_dates = future_chart["date"].tolist() if "date" in future_chart.columns else []
-    labels = sorted(set(price_dates + future_dates))
+    historical_metric = interpolated_metric(
+        actuals,
+        prices["date"] if "date" in prices.columns else pd.Series([], dtype="datetime64[ns]"),
+        mode,
+    )
     for idx, multiple in enumerate(bands):
-        past_points = []
-        for dt in labels:
-            if not prices.empty and dt <= prices["date"].max():
-                row = latest_actual(actuals, dt)
-                past_points.append({"date": dt, "value": band_value(row, multiple, mode) if row is not None else None})
-        if past_points:
-            past_df = pd.DataFrame(past_points).dropna()
-            if not past_df.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=past_df["date"],
-                        y=past_df["value"],
-                        mode="lines",
-                        name=f"{multiple:g}x",
-                        line=dict(width=1.8),
-                    )
-                )
-        if not future_chart.empty:
-            y_values = [band_value(row, multiple, mode) for _, row in future_chart.iterrows()]
+        if not historical_metric.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=future_chart["date"],
+                    x=historical_metric["date"],
+                    y=historical_metric["metric"] * multiple,
+                    mode="lines",
+                    name=f"{multiple:g}x",
+                    line=dict(width=1.8),
+                )
+            )
+        if not future_chart.empty:
+            column = metric_column(mode)
+            future_points = future_chart[["date", column]].dropna().rename(columns={column: "metric"})
+            if not historical_metric.empty:
+                future_points = pd.concat([historical_metric.tail(1), future_points], ignore_index=True)
+            y_values = future_points["metric"] * multiple
+            fig.add_trace(
+                go.Scatter(
+                    x=future_points["date"],
                     y=y_values,
                     mode="lines+markers",
                     name=f"{multiple:g}x 예상",
