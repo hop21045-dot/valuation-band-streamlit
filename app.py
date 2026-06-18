@@ -254,7 +254,13 @@ def valuation_metric(
         forward = interpolated_metric(source, shifted_dates, mode)
         if forward.empty:
             return forward
-        return pd.DataFrame({"date": base_dates.to_list(), "metric": forward["metric"].to_list()}).dropna()
+        mapped = pd.DataFrame({"date": base_dates.to_list(), "forward_date": shifted_dates.to_list()})
+        mapped = mapped.merge(
+            forward.rename(columns={"date": "forward_date"}),
+            on="forward_date",
+            how="left",
+        )
+        return mapped[["date", "metric"]].dropna()
 
     return interpolated_metric(metric_source(actuals, forecast, basis), base_dates, mode)
 
