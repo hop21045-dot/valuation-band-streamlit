@@ -17,6 +17,7 @@ def blank_stock(code: str = "NEW-1") -> dict[str, str]:
         "name": "새 종목",
         "code": code,
         "mode": "PER",
+        "basis": "확정 실적",
         "perBands": "8, 10, 12, 15, 20",
         "pbrBands": "0.5, 1, 1.5, 2.0, 2.5",
         "prices": "",
@@ -216,11 +217,50 @@ def interpolated_metric(actuals: pd.DataFrame, dates: pd.Series, mode: str) -> p
     return pd.DataFrame({"date": target_dates.to_list(), "metric": values.to_list()}).dropna()
 
 
+def metric_source(actuals: pd.DataFrame, forecast: pd.DataFrame, basis: str) -> pd.DataFrame:
+    columns = ["date", "eps", "bps"]
+    if basis == "확정 실적":
+        return actuals if not actuals.empty else pd.DataFrame(columns=columns)
+
+    frames = []
+    if not actuals.empty:
+        frames.append(actuals[columns])
+    if not forecast.empty:
+        frames.append(forecast[columns])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return (
+        pd.concat(frames, ignore_index=True)
+        .dropna(subset=["date"])
+        .drop_duplicates(subset=["date"], keep="last")
+        .sort_values("date")
+    )
+
+
+def valuation_metric(
+    actuals: pd.DataFrame,
+    forecast: pd.DataFrame,
+    dates: pd.Series,
+    mode: str,
+    basis: str,
+) -> pd.DataFrame:
+    if basis == "12M Forward":
+        source = metric_source(actuals, forecast, "예상 실적")
+        shifted_dates = pd.to_datetime(dates) + pd.DateOffset(years=1)
+        forward = interpolated_metric(source, shifted_dates, mode)
+        if forward.empty:
+            return forward
+        return pd.DataFrame({"date": pd.to_datetime(dates).to_list(), "metric": forward["metric"].to_list()}).dropna()
+
+    return interpolated_metric(metric_source(actuals, forecast, basis), dates, mode)
+
+
 def build_chart(
     prices: pd.DataFrame,
     actuals: pd.DataFrame,
     forecast: pd.DataFrame,
     mode: str,
+    basis: str,
     bands: list[float],
     start_date: date | None,
     end_date: date | None,
@@ -258,10 +298,12 @@ def build_chart(
             )
         )
 
-    historical_metric = interpolated_metric(
+    historical_metric = valuation_metric(
         actuals,
+        forecast,
         prices["date"] if "date" in prices.columns else pd.Series([], dtype="datetime64[ns]"),
         mode,
+        basis,
     )
     for idx, multiple in enumerate(bands):
         if not historical_metric.empty:
@@ -275,8 +317,7 @@ def build_chart(
                 )
             )
         if not future_chart.empty:
-            column = metric_column(mode)
-            future_points = future_chart[["date", column]].dropna().rename(columns={column: "metric"})
+            future_points = valuation_metric(actuals, forecast, future_chart["date"], mode, basis)
             if not historical_metric.empty:
                 future_points = pd.concat([historical_metric.tail(1), future_points], ignore_index=True)
             y_values = future_points["metric"] * multiple
@@ -348,6 +389,14 @@ def main() -> None:
         name = st.text_input("종목명", value=stock.get("name", ""))
         code = st.text_input("종목코드", value=stock.get("code", ""))
         mode = st.selectbox("차트 지표", ["PER", "PBR"], index=0 if stock.get("mode", "PER") == "PER" else 1)
+        basis_options = ["확정 실적", "예상 실적", "12M Forward"]
+        basis = st.selectbox(
+            "밴드 실적 기준",
+            basis_options,
+            index=basis_options.index(stock.get("basis", "확정 실적"))
+            if stock.get("basis", "확정 실적") in basis_options
+            else 0,
+        )
         per_bands = st.text_input("PER 배수", value=stock.get("perBands", "8, 10, 12, 15, 20"))
         pbr_bands = st.text_input("PBR 배수", value=stock.get("pbrBands", "0.5, 1, 1.5, 2.0, 2.5"))
 
@@ -395,6 +444,7 @@ def main() -> None:
                     "name": name,
                     "code": code,
                     "mode": mode,
+                    "basis": basis,
                     "perBands": per_bands,
                     "pbrBands": pbr_bands,
                     "prices": prices_text,
@@ -413,6 +463,7 @@ def main() -> None:
             "name": name,
             "code": code,
             "mode": mode,
+            "basis": basis,
             "perBands": per_bands,
             "pbrBands": pbr_bands,
             "prices": prices_text,
@@ -429,15 +480,21 @@ def main() -> None:
     c1, c2, c3, c4 = st.columns(4)
     last_price = prices.iloc[-1] if not prices.empty else None
     last_actual = latest_actual(actuals, last_price["date"]) if last_price is not None else None
+    metric_basis_df = (
+        valuation_metric(actuals, forecast, pd.Series([last_price["date"]]), mode, basis)
+        if last_price is not None
+        else pd.DataFrame(columns=["date", "metric"])
+    )
+    last_metric = float(metric_basis_df.iloc[-1]["metric"]) if not metric_basis_df.empty else None
     mid = bands[len(bands) // 2] if bands else 1
-    mid_value = band_value(last_actual, mid, mode) if last_actual is not None else None
+    mid_value = last_metric * mid if last_metric is not None else None
     gap = (last_price["price"] / mid_value - 1) * 100 if last_price is not None and mid_value else None
 
     c1.metric("최근 주가", f"{last_price['price']:,.0f}" if last_price is not None else "-", str(last_price["date"].date()) if last_price is not None else "-")
     if last_actual is not None:
         metric_name = "BPS" if mode == "PBR" else "EPS"
-        metric_value = last_actual["bps"] if mode == "PBR" else last_actual["eps"]
-        c2.metric("적용 실적", f"{int(last_actual['date'].year)} {metric_name} {metric_value:,.0f}")
+        metric_value = last_metric if last_metric is not None else (last_actual["bps"] if mode == "PBR" else last_actual["eps"])
+        c2.metric("적용 실적", f"{basis} {metric_name} {metric_value:,.0f}")
     else:
         c2.metric("적용 실적", "-")
     c3.metric("중앙 밴드 대비", f"{gap:+.1f}%" if gap is not None else "-", f"{mid:g}x 기준")
@@ -470,7 +527,7 @@ def main() -> None:
         max_value=max_chart_date,
     )
 
-    fig, future_all = build_chart(prices, actuals, forecast, mode, bands, start_date, end_date)
+    fig, future_all = build_chart(prices, actuals, forecast, mode, basis, bands, start_date, end_date)
     st.plotly_chart(fig, use_container_width=True)
 
     right_a, right_b = st.columns([1, 1])
