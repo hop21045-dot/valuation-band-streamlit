@@ -122,7 +122,8 @@ def parse_rows(text: str, kind: str) -> pd.DataFrame:
             rows.append({"date": normalize_date(raw_date), "price": nums[0]})
         elif kind == "actual" and len(nums) >= 2:
             rows.append({"date": normalize_date(raw_date), "eps": nums[0], "bps": nums[1]})
-    df = pd.DataFrame(rows)
+    columns = ["date", "price"] if kind == "price" else ["date", "eps", "bps"]
+    df = pd.DataFrame(rows, columns=columns)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -168,6 +169,12 @@ def build_chart(
     end_date: date | None,
 ) -> tuple[go.Figure, pd.DataFrame]:
     all_prices = prices.copy()
+    if prices.empty:
+        prices = pd.DataFrame(columns=["date", "price"])
+    if actuals.empty:
+        actuals = pd.DataFrame(columns=["date", "eps", "bps"])
+    if forecast.empty:
+        forecast = pd.DataFrame(columns=["date", "eps", "bps"])
     if not prices.empty and start_date:
         prices = prices[prices["date"] >= pd.Timestamp(start_date)]
     if not prices.empty and end_date:
