@@ -122,8 +122,7 @@ def parse_rows(text: str, kind: str) -> pd.DataFrame:
             rows.append({"date": normalize_date(raw_date), "price": nums[0]})
         elif kind == "actual" and len(nums) >= 2:
             rows.append({"date": normalize_date(raw_date), "eps": nums[0], "bps": nums[1]})
-    columns = ["date", "price"] if kind == "price" else ["date", "eps", "bps"]
-    df = pd.DataFrame(rows, columns=columns)
+    df = pd.DataFrame(rows)
     if df.empty:
         return df
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
@@ -169,20 +168,21 @@ def build_chart(
     end_date: date | None,
 ) -> tuple[go.Figure, pd.DataFrame]:
     all_prices = prices.copy()
-    if prices.empty:
-        prices = pd.DataFrame(columns=["date", "price"])
-    if actuals.empty:
-        actuals = pd.DataFrame(columns=["date", "eps", "bps"])
-    if forecast.empty:
-        forecast = pd.DataFrame(columns=["date", "eps", "bps"])
     if not prices.empty and start_date:
         prices = prices[prices["date"] >= pd.Timestamp(start_date)]
     if not prices.empty and end_date:
         prices = prices[prices["date"] <= pd.Timestamp(end_date)]
 
     last_price_date = all_prices["date"].max() if not all_prices.empty else pd.Timestamp("1900-01-01")
-    future_all = forecast[forecast["date"] > last_price_date].copy() if not forecast.empty else pd.DataFrame()
+    future_columns = ["date", "eps", "bps"]
+    future_all = (
+        forecast[forecast["date"] > last_price_date].copy()
+        if not forecast.empty and "date" in forecast.columns
+        else pd.DataFrame(columns=future_columns)
+    )
     future_chart = future_all.copy()
+    if "date" not in future_chart.columns:
+        future_chart = pd.DataFrame(columns=future_columns)
     if not future_chart.empty and start_date:
         future_chart = future_chart[future_chart["date"] >= pd.Timestamp(start_date)]
     if not future_chart.empty and end_date:
@@ -200,7 +200,9 @@ def build_chart(
             )
         )
 
-    labels = sorted(set(prices["date"].tolist() + future_chart["date"].tolist()))
+    price_dates = prices["date"].tolist() if "date" in prices.columns else []
+    future_dates = future_chart["date"].tolist() if "date" in future_chart.columns else []
+    labels = sorted(set(price_dates + future_dates))
     for idx, multiple in enumerate(bands):
         past_points = []
         for dt in labels:
