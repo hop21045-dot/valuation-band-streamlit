@@ -69,6 +69,33 @@ def save_db(base: str, db: dict[str, Any]) -> None:
     api_post(base, "/api/save-workbench", db)
 
 
+def refresh_prices_if_stale(base: str, db: dict[str, Any], stock: dict[str, Any], code: str) -> None:
+    clean_code = "".join(ch for ch in str(code or "") if ch.isdigit())
+    if len(clean_code) != 6:
+        return
+
+    refresh_key = f"price_refresh:{clean_code}:{date.today().isoformat()}"
+    if st.session_state.get(refresh_key):
+        return
+
+    current_prices = parse_rows(stock.get("prices", ""), "price")
+    latest_saved = current_prices["date"].max().date() if not current_prices.empty else None
+    if latest_saved and latest_saved >= date.today():
+        st.session_state[refresh_key] = True
+        return
+
+    try:
+        payload = api_get(base, "/api/load-stock", code=clean_code)
+        prices = payload.get("prices", [])
+        if prices:
+            stock["prices"] = serialize_rows(prices, "price")
+            save_db(base, db)
+        st.session_state[refresh_key] = True
+    except Exception as exc:
+        st.sidebar.caption(f"최신 주가 자동 갱신 실패: {exc}")
+        st.session_state[refresh_key] = True
+
+
 def to_number(value: Any) -> float | None:
     if value is None:
         return None
@@ -353,6 +380,8 @@ def main() -> None:
                 st.rerun()
             except Exception as exc:
                 st.error(f"직접 가져오기 실패: {exc}")
+
+        refresh_prices_if_stale(base, db, stock, code)
 
         st.divider()
         prices_text = st.text_area("주가: date, price", value=stock.get("prices", ""), height=140)
