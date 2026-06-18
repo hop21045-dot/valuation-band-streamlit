@@ -244,15 +244,19 @@ def valuation_metric(
     mode: str,
     basis: str,
 ) -> pd.DataFrame:
+    base_dates = pd.to_datetime(pd.Series(dates).dropna().drop_duplicates()).sort_values()
+    if base_dates.empty:
+        return pd.DataFrame(columns=["date", "metric"])
+
     if basis == "12M Forward":
         source = metric_source(actuals, forecast, "예상 실적")
-        shifted_dates = pd.to_datetime(dates) + pd.DateOffset(years=1)
+        shifted_dates = base_dates + pd.DateOffset(years=1)
         forward = interpolated_metric(source, shifted_dates, mode)
         if forward.empty:
             return forward
-        return pd.DataFrame({"date": pd.to_datetime(dates).to_list(), "metric": forward["metric"].to_list()}).dropna()
+        return pd.DataFrame({"date": base_dates.to_list(), "metric": forward["metric"].to_list()}).dropna()
 
-    return interpolated_metric(metric_source(actuals, forecast, basis), dates, mode)
+    return interpolated_metric(metric_source(actuals, forecast, basis), base_dates, mode)
 
 
 def build_chart(
